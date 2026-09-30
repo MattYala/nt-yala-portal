@@ -68,7 +68,9 @@ async function main(){
   // เก็บ session ในหน่วยความจำเท่านั้น (ไม่ใส่ใน URL / ไม่เก็บถาวร)
   window.__session = res.session;
   const roles = res.roles || {};
-  const cards = CONFIG.SYSTEMS.map(s => {
+  const tasksOnly = /tasks/.test(location.search + location.hash);
+  const list = tasksOnly ? CONFIG.SYSTEMS.filter(s => s.needRole && roles[s.key]) : CONFIG.SYSTEMS;
+  const cards = list.map(s => {
     const role = roles[s.key];
     const allowed = s.url && (!s.needRole || role);
     const why = !s.url ? 'เร็ว ๆ นี้' : (!allowed ? 'ยังไม่มีสิทธิ์ — ติดต่อ ผส.' : s.desc);
@@ -76,7 +78,9 @@ async function main(){
     return `<a class="card sys ${allowed?'':'off'}" ${allowed?`href="${esc(s.url)}"`:''}>
       <span class="ic">${s.icon}</span><span><div class="t">${esc(s.name)}</div><div class="d">${esc(why)}</div></span>${tag}</a>`;
   }).join('');
-  show(`<div class="card hello">สวัสดี <b>${esc(res.user.name)}</b><br><small>${esc(res.user.center||'')} · รหัส ${esc(res.user.empId)}</small></div>${cards}`);
+  const empty = tasksOnly && !list.length ? '<div class="card msg">ยังไม่มีงานที่ได้รับมอบหมาย<br><small>หากต้องการรับงาน ติดต่อ ผส.</small></div>' : '';
+  const title = tasksOnly ? '<div class="card"><b>งานที่ได้รับมอบหมาย</b></div>' : '';
+  show(`<div class="card hello">สวัสดี <b>${esc(res.user.name)}</b><br><small>${esc(res.user.center||'')} · รหัส ${esc(res.user.empId)}</small></div>${title}${cards}${empty}`);
   document.getElementById('foot').textContent = 'เข้าสู่ระบบถึง ' + new Date(res.expiresAt*1000).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}) + ' น.';
 }
 main().catch(e => fail('เกิดข้อผิดพลาด', String(e && e.message || e)));
