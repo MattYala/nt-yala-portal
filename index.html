@@ -46,29 +46,23 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 const show = h => app.innerHTML = h;
 const fail = (t, d) => show(`<div class="card msg"><div class="err"><b>${esc(t)}</b></div><p>${esc(d||'')}</p><button onclick="location.reload()">ลองใหม่</button></div>`);
 
-async function call(body){
+const KEY = 'ntyala_portal_v1';
+const lsGet = () => { try { return JSON.parse(localStorage.getItem(KEY) || 'null'); } catch(e){ return null; } };
+const lsSet = v => { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch(e){} };
+const lsDel = () => { try { localStorage.removeItem(KEY); } catch(e){} };
+const tasksOnly = /tasks/.test(location.search + location.hash);
+const setFoot = t => document.getElementById('foot').textContent = t;
+
+async function call(body, ms){
   // text/plain เพื่อไม่ให้เบราว์เซอร์ส่ง preflight (Apps Script ไม่รองรับ OPTIONS)
-  const r = await fetch(CONFIG.CORE_API, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(body) });
-  return r.json();
+  const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
+  try {
+    const r = await fetch(CONFIG.CORE_API, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(body), signal: ac.signal });
+    return await r.json();
+  } finally { clearTimeout(t); }
 }
 
-async function main(){
-  if (CONFIG.LIFF_ID.startsWith('YOUR')) return fail('ยังไม่ได้ตั้งค่า LIFF ID', 'แก้ CONFIG.LIFF_ID ในไฟล์ index.html');
-  await liff.init({ liffId: CONFIG.LIFF_ID });
-  if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
-  const idToken = liff.getIDToken();
-  if (!idToken) return fail('ไม่พบ ID token', 'ตรวจว่า LIFF เปิดสิทธิ์ scope openid แล้ว');
-  let res;
-  try { res = await call({ action:'login', idToken }); } catch(e){ return fail('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้', 'ลองใหม่อีกครั้ง'); }
-  if (!res.ok) {
-    if (res.error === 'NOT_REGISTERED') return fail('ยังไม่ได้ลงทะเบียน', 'พิมพ์ลงทะเบียนในแชทบอท NT Yala แล้วรอ ผส. อนุมัติ จากนั้นเปิดหน้านี้ใหม่');
-    if (res.error === 'TOKEN_EXPIRED') { liff.logout(); return liff.login({ redirectUri: location.href }); }
-    return fail('เข้าสู่ระบบไม่สำเร็จ', 'รหัสข้อผิดพลาด: ' + res.error);
-  }
-  // เก็บ session ในหน่วยความจำเท่านั้น (ไม่ใส่ใน URL / ไม่เก็บถาวร)
-  window.__session = res.session;
-  const roles = res.roles || {};
-  const tasksOnly = /tasks/.test(location.search + location.hash);
+function render(user, roles, note){
   const list = tasksOnly ? CONFIG.SYSTEMS.filter(s => s.needRole && roles[s.key]) : CONFIG.SYSTEMS;
   const cards = list.map(s => {
     const role = roles[s.key];
@@ -80,8 +74,38 @@ async function main(){
   }).join('');
   const empty = tasksOnly && !list.length ? '<div class="card msg">ยังไม่มีงานที่ได้รับมอบหมาย<br><small>หากต้องการรับงาน ติดต่อ ผส.</small></div>' : '';
   const title = tasksOnly ? '<div class="card"><b>งานที่ได้รับมอบหมาย</b></div>' : '';
-  show(`<div class="card hello">สวัสดี <b>${esc(res.user.name)}</b><br><small>${esc(res.user.center||'')} · รหัส ${esc(res.user.empId)}</small></div>${title}${cards}${empty}`);
-  document.getElementById('foot').textContent = 'เข้าสู่ระบบถึง ' + new Date(res.expiresAt*1000).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}) + ' น.';
+  show(`<div class="card hello">สวัสดี <b>${esc(user.name)}</b><br><small>${esc(user.center||'')} · รหัส ${esc(user.empId)}</small></div>${title}${cards}${empty}`);
+  setFoot(note || '');
+}
+
+async function main(){
+  if (CONFIG.LIFF_ID.startsWith('YOUR')) return fail('ยังไม่ได้ตั้งค่า LIFF ID', 'แก้ CONFIG.LIFF_ID ในไฟล์ index.html');
+  // แสดงทันทีจากข้อมูลครั้งก่อน (ถ้ามี) ระหว่างรอตรวจสอบเบื้องหลัง
+  const cached = lsGet();
+  if (cached && cached.user) render(cached.user, cached.roles || {}, 'กำลังตรวจสอบสิทธิ์ล่าสุด…');
+  await liff.init({ liffId: CONFIG.LIFF_ID });
+  if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+  const idToken = liff.getIDToken();
+  if (!idToken) return fail('ไม่พบ ID token', 'ตรวจว่า LIFF เปิดสิทธิ์ scope openid แล้ว');
+  let res = null, lastErr = '';
+  for (let i = 1; i <= 3 && !res; i++) {
+    if (!cached) show(`<div class="card msg">กำลังเชื่อมต่อเซิร์ฟเวอร์… (ครั้งที่ ${i}/3)<br><small>บางครั้งใช้เวลาถึง 30 วินาที</small></div>`);
+    try { res = await call({ action:'login', idToken }, 30000); }
+    catch(e){ lastErr = e && e.name === 'AbortError' ? 'หมดเวลารอ' : 'เชื่อมต่อไม่ได้'; res = null; }
+  }
+  if (!res) {
+    if (cached && cached.user) return setFoot('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ (' + lastErr + ') — แสดงข้อมูลครั้งก่อน');
+    return fail('เชื่อมต่อเซิร์ฟเวอร์ไม่ได้', lastErr + ' — กรุณาลองใหม่อีกครั้งในอีกสักครู่');
+  }
+  if (!res.ok) {
+    lsDel();
+    if (res.error === 'NOT_REGISTERED') return fail('ยังไม่ได้ลงทะเบียน', 'พิมพ์ลงทะเบียนในแชทบอท NT Yala แล้วรอ ผส. อนุมัติ จากนั้นเปิดหน้านี้ใหม่');
+    if (res.error === 'TOKEN_EXPIRED') { liff.logout(); return liff.login({ redirectUri: location.href }); }
+    return fail('เข้าสู่ระบบไม่สำเร็จ', 'รหัสข้อผิดพลาด: ' + res.error);
+  }
+  window.__session = res.session;  // เก็บ session ในหน่วยความจำเท่านั้น
+  lsSet({ user: res.user, roles: res.roles });  // เก็บเฉพาะชื่อ/สิทธิ์เพื่อแสดงเร็ว (ไม่เก็บ session/token)
+  render(res.user, res.roles || {}, 'เข้าสู่ระบบถึง ' + new Date(res.expiresAt*1000).toLocaleTimeString('th-TH',{hour:'2-digit',minute:'2-digit'}) + ' น.');
 }
 main().catch(e => fail('เกิดข้อผิดพลาด', String(e && e.message || e)));
 </script>
