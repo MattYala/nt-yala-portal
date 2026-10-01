@@ -37,8 +37,8 @@ const CONFIG = {
   SYSTEMS: [
     { key: 'kpi', icon: '📊', name: 'KPI ผลงานรายบุคคล', desc: 'ดูคะแนนและผลงานภาคสนาม',
       url: 'https://liff.line.me/2011665434-rMbcebZR', needRole: false },
-    { key: 'cgd', icon: '🎁', name: 'คลังของแจกลูกค้า', desc: 'เบิก/ตรวจสอบของที่ระลึก',
-      url: 'https://ntyalacgd.netlify.app/', needRole: true }
+    { key: 'cgd', icon: '🎁', name: 'คลังสินค้า / เบิกของให้ลูกค้า', desc: 'CGD · เบิก/ตรวจสอบของที่ระลึก',
+      url: 'https://ntyalacgd.netlify.app/auth/callback', needRole: true, handoff: true }
   ]
 };
 const app = document.getElementById('app');
@@ -69,7 +69,8 @@ function render(user, roles, note){
     const allowed = s.url && (!s.needRole || role);
     const why = !s.url ? 'เร็ว ๆ นี้' : (!allowed ? 'ยังไม่มีสิทธิ์ — ติดต่อ ผส.' : s.desc);
     const tag = role ? `<span class="role">${esc(role)}</span>` : '';
-    return `<a class="card sys ${allowed?'':'off'}" ${allowed?`href="${esc(s.url)}"`:''}>
+    const link = !allowed ? '' : (s.handoff ? `href="#" data-go="${esc(s.key)}"` : `href="${esc(s.url)}"`);
+    return `<a class="card sys ${allowed?'':'off'}" ${link}>
       <span class="ic">${s.icon}</span><span><div class="t">${esc(s.name)}</div><div class="d">${esc(why)}</div></span>${tag}</a>`;
   }).join('');
   const empty = tasksOnly && !list.length ? '<div class="card msg">ยังไม่มีงานที่ได้รับมอบหมาย<br><small>หากต้องการรับงาน ติดต่อ ผส.</small></div>' : '';
@@ -77,6 +78,25 @@ function render(user, roles, note){
   show(`<div class="card hello">สวัสดี <b>${esc(user.name)}</b><br><small>${esc(user.center||'')} · รหัส ${esc(user.empId)}</small></div>${title}${cards}${empty}`);
   setFoot(note || '');
 }
+
+// ส่งต่อไป CGD ด้วย code ใช้ครั้งเดียว (60 วินาที) — ไม่ใส่ session/token ใน URL
+async function goHandoff(key){
+  const sys = CONFIG.SYSTEMS.find(x => x.key === key);
+  if (!window.__session) return setFoot('กำลังตรวจสอบตัวตน รอสักครู่แล้วกดอีกครั้ง');
+  setFoot('กำลังเปิด ' + sys.name + '…');
+  try {
+    const r = await call({ action:'handoff', session: window.__session, target: key }, 30000);
+    if (r && r.ok && r.code) { location.href = sys.url + '?code=' + encodeURIComponent(r.code); return; }
+    const e = (r && r.error) || '';
+    if (/^SESSION_/.test(e)) return setFoot('เซสชันหมดอายุ — ปิดแล้วเปิด Portal ใหม่');
+    if (e === 'FORBIDDEN') return setFoot('ยังไม่มีสิทธิ์ใช้งานระบบนี้ — ติดต่อ ผส.');
+    setFoot('ยังเชื่อมต่อ ' + sys.name + ' ไม่ได้ (' + (e || 'ไม่ทราบสาเหตุ') + ')');
+  } catch(err){ setFoot('เชื่อมต่อไม่ได้ ลองใหม่อีกครั้ง'); }
+}
+document.addEventListener('click', ev => {
+  const a = ev.target.closest && ev.target.closest('[data-go]');
+  if (a) { ev.preventDefault(); goHandoff(a.getAttribute('data-go')); }
+});
 
 async function main(){
   if (CONFIG.LIFF_ID.startsWith('YOUR')) return fail('ยังไม่ได้ตั้งค่า LIFF ID', 'แก้ CONFIG.LIFF_ID ในไฟล์ index.html');
